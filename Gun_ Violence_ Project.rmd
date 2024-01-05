@@ -1,0 +1,854 @@
+---
+title: "Final Project"
+output: html_document
+date: "2023-12-09"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Importing dataset
+
+```{r}
+gun = read.csv("E:/Users/pc/Downloads/Stats - Final Proj/Dataset_1_Gun_violence.csv")
+attach(gun)
+summary(gun)
+```
+
+#Necessary Libraries
+
+```{r}
+#Libraries
+library(tm)
+library(wordcloud)
+library(SnowballC)
+library(ggplot2)
+library(dplyr)
+library(RColorBrewer)
+library(FNN)
+library(e1071)
+library(GGally)
+library(ggfortify)
+library(ranger)
+library(caret)
+library(gbm)
+library(clustMixType)
+```
+
+
+#NLP
+
+```{r}
+# Step 1: Sample a subset of the data to reduce memory usage
+set.seed(123)  # for reproducibility
+sample_size = 239677  # Entire dataset
+sample_indices = sample(seq_len(nrow(gun)), sample_size)
+sampled_notes = gun$notes[sample_indices]
+
+# Step 2: Create a text corpus from the sampled notes
+corpus <- Corpus(VectorSource(sampled_notes))
+
+# Step 3: Preprocess the text data - this is the same as before
+corpus_clean = tm_map(corpus, content_transformer(tolower))
+corpus_clean = tm_map(corpus_clean, removePunctuation)
+corpus_clean = tm_map(corpus_clean, removeNumbers)
+corpus_clean = tm_map(corpus_clean, removeWords, stopwords("en"))
+corpus_clean = tm_map(corpus_clean, stripWhitespace)
+corpus_clean = tm_map(corpus_clean, stemDocument)
+
+# Step 4: Create a Term-Document Matrix with sparse = TRUE to save memory
+tdm = TermDocumentMatrix(corpus_clean, control = list(sparse = TRUE))
+
+# Step 5: Remove sparse terms to further reduce memory usage
+tdm = removeSparseTerms(tdm, 0.99)  # Keep terms that appear in at least 1% of the documents
+
+# Step 6: Calculate the TF-IDF weights for the terms in the TDM
+tfidf = weightTfIdf(tdm)
+
+# Step 7: Convert the TDM to a matrix and sum over columns to get term frequencies
+term_freq <- rowSums(as.matrix(tfidf))
+
+# Step 8: Sort the terms by their frequencies in decreasing order
+sorted_term_freq <- sort(term_freq, decreasing = TRUE)
+
+# Step 9: Create a word cloud with the terms
+wordcloud(names(sorted_term_freq), sorted_term_freq, min.freq = 1, scale=c(3,0.5), max.words=20, random.order=FALSE, rot.per=0.35, colors=brewer.pal(8, "Dark2"))
+```
+
+
+
+```{r}
+# List of invalid columns to remove
+columns_to_remove <- c("incident_id", "incident_url", "source_url", "sources", 
+                       "incident_url_fields_missing", "participant_name", "address",
+                       "notes")
+
+# Removing the columns
+gun = gun[, !colnames(gun) %in% columns_to_remove]
+```
+
+
+
+```{r}
+# Add a new column 'violence_score' 
+# The score is calculated as n_injured + 2 * n_killed
+
+gun$violence_score <- gun$n_injured + 2 * gun$n_killed
+
+
+#Remove n_injured and n_killed
+gun <- gun[, !colnames(gun) %in% c("n_injured")]
+gun <- gun[, !colnames(gun) %in% c("n_killed")]
+
+#Making it numeric
+gun$violence_score = as.numeric(gun$violence_score)
+```
+
+
+
+```{r}
+# Define a new, more varied color palette
+color_palette <- brewer.pal(9, "Set1")
+
+# Iterate over each column in the dataframe using seq_along()
+for (i in seq_along(gun)) {
+  col_name <- names(gun)[i]
+  column_data <- gun[[col_name]]
+
+  # Check if the column is a factor or character, as histograms are for categorical data
+  if (is.factor(column_data) || is.character(column_data)) {
+    column_data <- factor(column_data) # Convert to factor for consistent handling
+
+    # Create a dataframe with category counts
+    category_counts <- table(column_data) %>%
+      as.data.frame() %>%
+      arrange(desc(Freq)) %>%
+      mutate(category = reorder(column_data, Freq)) # Reorder categories by frequency
+
+    # Limit to the top 10 categories if there are too many
+    if (nrow(category_counts) > 10) {
+      category_counts <- head(category_counts, 10)
+    }
+
+    # Create a histogram using ggplot2
+    plot <- ggplot(category_counts, aes(x = category, y = Freq)) +
+      geom_bar(stat = "identity", fill = color_palette[i %% length(color_palette) + 1]) + # Use geom_bar for histograms
+      geom_text(aes(label = Freq), vjust = -0.5, size = 3) + # Add text labels
+      labs(title = paste("Histogram for Top Categories in", col_name), x = "Category", y = "Frequency") + # Customize labels
+      theme_minimal() +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1)) # Improve x-axis label readability
+
+    # Print the plot
+    print(plot)
+  }
+}
+```
+
+
+
+```{r}
+# Select only the specified columns
+selected_columns <- c("n_guns_involved", "violence_score")
+
+# Define a color palette
+color_palette <- brewer.pal(length(selected_columns), "Set1")
+
+# Loop through the selected columns
+for (col in selected_columns) {
+  # Check if the current column is numeric
+  if (is.numeric(gun[[col]])) {
+    # Create a histogram plot
+    plot <- ggplot(gun, aes_string(x = col)) +
+      geom_histogram(aes(y = ..density..), bins = 20, fill = color_palette[which(selected_columns == col)]) +  # Histogram with density
+      stat_function(fun = dnorm,  # Add a normal distribution curve
+                    args = list(mean = mean(gun[[col]], na.rm = TRUE), 
+                                sd = sd(gun[[col]], na.rm = TRUE)), 
+                    color = "black", size = 1) +
+      labs(title = paste("Histogram with Normal Curve for", col), x = col, y = "Density") +  # Add labels
+      theme_minimal() +  # Use a minimal theme for aesthetics
+      scale_x_continuous(limits = c(min(gun[[col]], na.rm = TRUE), max(gun[[col]], na.rm = TRUE))) +  # Auto scale x-axis
+      scale_y_continuous(limits = c(0, NA))  # Auto scale y-axis
+
+    # Print the plot
+    print(plot)
+  }
+}
+```
+
+
+
+```{r}
+#Check how many missing values in each column
+print(colSums(is.na(gun)))
+```
+
+
+
+```{r}
+# Count missing values in each column
+missing_values <- sapply(gun, function(x) sum(is.na(x)))
+
+# Count empty rows (rows where all values are missing)
+empty_rows <- sum(apply(gun, 1, function(x) all(is.na(x))))
+
+# Add empty row count to the missing values
+missing_values["EmptyRows"] <- empty_rows
+
+# Convert to data frame for ggplot
+missing_df <- data.frame(Category = names(missing_values), Count = missing_values)
+
+# Plot
+ggplot(missing_df, aes(x = Count, y = Category)) +
+  geom_bar(stat = "identity", fill = "blue") +
+  geom_text(aes(label = Count), hjust = -0.1) +
+  theme_minimal() +
+  labs(title = "Missing Values and Empty Rows", x = "Count", y = "Category")
+```
+
+
+
+```{r}
+# Data for the top 5 categories
+gun_types <- c("Unknown", "Handguns", "9mm", "Shotguns", "22 LR")
+incidents <- c(97807, 16618, 5434, 2633, 2602)
+
+# Create a data frame
+data <- data.frame(gun_types, incidents)
+
+# Create the bar plot
+ggplot(data, aes(x=gun_types, y=incidents, fill=gun_types)) +
+  geom_bar(stat="identity") +
+  geom_text(aes(label=incidents), vjust=-0.3) +
+  labs(title="Top 5 Gun Types in Incidents", x="Gun Type", y="Number of Incidents") +
+  theme_minimal()
+```
+
+
+
+```{r}
+# Define the names and their respective counts
+names <- c("shot", "gun", "fire", "man", "police", "car", "home", "kill", 
+           "suspect", "stolen", "drug", "found", "victim", "near", "shoot", 
+            "leg", "arm", "handgun", "inj", "vic")
+counts <- c(49617, 15868, 1997, 24292, 7277, 10075, 10009, 460, 9394, 7100, 
+            2640, 12786, 6906, 8372, 830, 5623, 2040, 6471, 8147, 5768)
+   
+# Create a data frame for plotting
+data <- data.frame(names, counts)
+     
+# Plot the data
+ggplot(data, aes(x = names, y = counts, label = counts)) + 
+geom_bar(stat = "identity", fill = "steelblue") + 
+geom_text(vjust = -0.3, size = 3.5) + 
+theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+labs(x = "Keywords", y = "Counts", title = "Counts of Top Keywords in Notes") +
+theme_minimal()
+```
+
+
+
+```{r}
+# Remove rows with missing values in the "latitude" and "longitude" columns
+gun <- gun[!is.na(gun$latitude) & !is.na(gun$longitude), ]
+```
+
+
+
+```{r}
+gun$latitude <- as.numeric(gun$latitude)
+gun$longitude <- as.numeric(gun$longitude)
+
+# Number of nearest neighbors
+k <- 10  # Adjust this based on your needs
+
+# Function to perform kNN imputation for a single district column
+impute_district <- function(data, district_col) {
+  # Split the data into sets with and without missing district values
+  data_missing_district <- data[is.na(data[[district_col]]), ]
+  data_complete_district <- data[!is.na(data[[district_col]]), ]
+
+  # Find k-nearest neighbors
+  nn <- get.knnx(data_complete_district[, c("latitude", "longitude")], 
+                 data_missing_district[, c("latitude", "longitude")], k = k)
+
+  # Impute missing district values
+  data_missing_district[[district_col]] <- data_complete_district[[district_col]][nn$nn.index[,1]]
+  
+  # Combine and return the data
+  rbind(data_complete_district, data_missing_district)
+}
+
+# Impute state_house_district
+gun <- impute_district(gun, "state_house_district")
+
+# Impute state_senate_district
+gun <- impute_district(gun, "state_senate_district")
+
+#Impute congressional_district
+gun <- impute_district(gun, "congressional_district")
+```
+
+
+
+```{r}
+#Removing latitude and longitude
+gun <- gun[, !colnames(gun) %in% c("latitude", "longitude")]
+```
+
+
+
+#Extract year, date and week
+
+```{r}
+#Extract date,year and month from date column
+gun$date <- as.Date(gun$date, "%m/%d/%Y")
+
+# Extract year, month, and day from the date
+gun$year <- format(gun$date, "%Y")
+gun$month <- format(gun$date, "%m")
+gun$day <- format(gun$date, "%d")
+
+gun <- gun[, !colnames(gun) %in% c("date")]
+
+gun$day <- as.integer(gun$day)
+gun$month <- as.integer(gun$month)
+```
+
+
+
+```{r}
+gun$year = as.factor(gun$year)
+
+# Define a color for the bar plot
+bar_color <- "steelblue"
+
+# Create a bar plot for the 'year' column
+plot <- ggplot(gun, aes(x = year)) +
+  geom_bar(fill = bar_color, stat = "count") +  # Bar plot
+  geom_text(stat = 'count', aes(label = ..count..), vjust = -0.5, position = position_stack(vjust = 0.5)) + # Add count labels
+  labs(title = "Bar Plot for Year", x = "Year", y = "Count") +  # Add labels
+  theme_minimal()  # Use a minimal theme for aesthetics
+
+# Print the plot
+print(plot)
+```
+
+
+
+```{r}
+#removing location_description and family_relationships
+gun <- gun[, !colnames(gun) %in% c("participant_relationship")]
+gun <- gun[, !colnames(gun) %in% c("location_description")]
+gun <- gun[, !colnames(gun) %in% c("participant_age")]
+gun <- gun[, !colnames(gun) %in% c("participant_age_group")]
+gun <- gun[, !colnames(gun) %in% c("participant_gender")]
+gun <- gun[, !colnames(gun) %in% c("participant_status")]
+gun <- gun[, !colnames(gun) %in% c("participant_type")]
+```
+
+
+
+```{r}
+# Function to clean up 'gun_type' entries
+clean_gun_type <- function(gun_type) {
+  # Split the string on '||', remove numeric prefixes, and then join back with '||'
+  cleaned_types <- sapply(strsplit(as.character(gun_type), "\\|\\|", fixed = TRUE), function(types) {
+    paste(sapply(types, function(type) gsub("^\\d+::", "", type)), collapse = "||")
+  })
+  
+  return(cleaned_types)
+}
+
+# Apply the function to the 'gun_type' column
+gun$gun_type <- unlist(lapply(gun$gun_type, clean_gun_type))
+
+# Check the first few entries of the cleaned 'gun_type'
+head(gun$gun_type)
+```
+
+
+
+```{r}
+# Define the categories including 'Unknown'
+categories <- c('Handgun', '9mm', 'Shotgun', '22 LR', 'Gun_Type_Unknown')
+
+# Create a new dataframe to hold the dummy variables
+gun_dummies <- data.frame(matrix(ncol = length(categories), nrow = nrow(gun)))
+names(gun_dummies) <- categories
+  
+# Function to update dummy variables
+update_dummies <- function(gun_type) {
+  # Initialize the dummies to zero
+  dummies <- numeric(length(categories))
+  names(dummies) <- categories
+  
+  # Check if the value is missing, empty, or 'Unknown'
+  if (is.na(gun_type) || gun_type == "" || gun_type == "Unknown") {
+    dummies['Gun_Type_Unknown'] <- 1
+    return(dummies)
+  }
+  
+  # Split the gun types into a list and clean each type
+  types <- unlist(strsplit(gun_type, "\\|\\|"))
+  for (type in types) {
+    # Remove numeric prefixes like '1::'
+    cleaned_type <- gsub("^\\d+::", "", trimws(type))
+    if (cleaned_type %in% categories) {
+      dummies[cleaned_type] <- 1
+    }
+  }
+  return(dummies)
+}
+
+
+# Apply the function to the gun_type column
+for (i in 1:nrow(gun)) {
+  gun_dummies[i, ] <- update_dummies(gun$gun_type[i])
+}
+
+# Combine the original dataframe with the dummy variables
+gun <- cbind(gun, gun_dummies)
+
+
+gun <- gun[, !colnames(gun) %in% c("gun_type")]
+```
+
+
+
+```{r}
+gun$n_guns_involved[is.na(gun$n_guns_involved)] <- 1
+
+#summary of the column after imputation
+summary(gun$n_guns_involved)
+
+#Removing guns_stolen as only 10000 are stolen and non-stolen
+gun <- gun[, !colnames(gun) %in% c("gun_stolen")]
+```
+
+
+
+```{r}
+# Define the top 10 incident characteristics
+top_characteristics <- c("Shot - Wounded/Injured", "Shot - Dead (murder, accidental, suicide)", 
+                         "Non-Shooting Incident", "Shots Fired - No Injuries", 
+                         "Possession (gun(s) found during commission of other crimes)", 
+                         "Armed robbery with injury/death and/or evidence of DGU found", 
+                         "Brandishing/flourishing/open carry/lost/found", 
+                         "ATF/LE Confiscation/Raid/Arrest", "Officer Involved Incident", 
+                         "Drug involvement")
+
+# Create dummy variables for each of the top 10 characteristics
+for (characteristic in top_characteristics) {
+  gun[[characteristic]] <- as.integer(grepl(characteristic, gun$incident_characteristics, fixed = TRUE))
+}
+
+#Remove original incident_characteristic column
+gun = gun[, !colnames(gun) %in% c("incident_characteristics")]
+```
+
+
+
+```{r}
+gun$state = as.factor(gun$state)
+gun$city_or_county = as.factor(gun$city_or_county)
+gun$congressional_district = as.factor(gun$congressional_district)
+gun$state_house_district = as.factor(gun$state_house_district)
+gun$state_senate_district = as.factor(gun$state_senate_district)
+gun$Shot_Wounded_or_Injured = as.factor(gun$`Shot - Wounded/Injured`)
+gun$Shot_Dead_eg_murder_accidental_suicide = as.factor(gun$`Shot - Dead (murder, accidental, suicide)`)
+gun$Non_Shooting_Incident = as.factor(gun$`Non-Shooting Incident`)
+gun$Shots_Fired_No_Injuries = as.factor(gun$`Shots Fired - No Injuries`)
+gun$Possession_eg_guns_found_during_commission_of_other_crimes = as.factor(gun$`Possession (gun(s) found during commission of other crimes)`)
+gun$Armed_robbery_with_injury_or_death_and_or_evidence_of_DGU_found = as.factor(gun$`Armed robbery with injury/death and/or evidence of DGU found`)
+gun$Brandishing_or_flourishing_or_open_carry_or_lost_or_found = as.factor(gun$`Brandishing/flourishing/open carry/lost/found`)
+
+
+```
+
+
+
+```{r}
+gun$ATF_or_LEConfiscation_or_Raid_or_Arrest = as.factor(gun$`ATF/LE Confiscation/Raid/Arrest`)
+gun$Officer_Involved_Incident = as.factor(gun$`Officer Involved Incident`)
+gun$Drug_involvement = as.factor(gun$`Drug involvement`)
+gun$year = as.numeric(gun$year)
+gun$violence_score = as.numeric(gun$violence_score)
+gun$Handgun = as.factor(gun$Handgun)
+gun$Shotgun = as.factor(gun$Shotgun)
+gun$"9mm" = as.factor(gun$"9mm")
+gun$Gun_Type_Unknown = as.factor(gun$Gun_Type_Unknown)
+```
+
+
+
+```{r}
+gun$"22_LR" = as.factor(gun$`22 LR`)
+gun$day = as.factor(gun$day)
+gun$month = as.factor(gun$month)
+
+gun = gun[, !colnames(gun) %in% c("Shot - Wounded/Injured", "Shot - Dead (murder, accidental, suicide)", "Non-Shooting Incident", "Shots Fired - No Injuries", 
+"Possession (gun(s) found during commission of other crimes)", 
+"Armed robbery with injury/death and/or evidence of DGU found", 
+"Brandishing/flourishing/open carry/lost/found", 
+"ATF/LE Confiscation/Raid/Arrest", "Officer Involved Incident", 
+"Drug involvement","22 LR")]
+```
+
+
+
+```{r}
+gun$gun_22_LR = as.factor(gun$"22_LR")
+gun$gun_9mm = as.factor(gun$"9mm")
+
+gun = gun[, !colnames(gun) %in% c("9mm","22_LR")]
+```
+
+
+
+```{r}
+# Select only numerical columns from the dataframe
+numerical_cols <- gun[sapply(gun, is.numeric)]
+
+# Calculate skewness for each numerical column
+skewness_values <- sapply(numerical_cols, skewness)
+
+# Display the skewness values
+print(skewness_values)
+```
+
+
+
+```{r}
+# Function to identify outliers
+is_outlier <- function(x) {
+  q25 <- quantile(x, 0.25)
+  q75 <- quantile(x, 0.75)
+  iqr <- q75 - q25
+  lower_bound <- q25 - 1.5 * iqr
+  upper_bound <- q75 + 1.5 * iqr
+  return(x < lower_bound | x > upper_bound)
+}
+
+# Apply the function to each numeric column
+outlier_matrix = sapply(gun[sapply(gun, is.numeric)], is_outlier)
+
+# Count outliers per row
+outlier_counts_per_row = rowSums(outlier_matrix)
+
+# Identify rows with more than one outlier
+rows_with_multiple_outliers = which(outlier_counts_per_row > 1)
+
+# Display the indices of rows with multiple outliers
+print(rows_with_multiple_outliers)
+```
+
+
+
+```{r}
+#Removing rows with more than 1 outliers
+gun = gun[-rows_with_multiple_outliers, ]
+```
+
+
+
+```{r}
+# Select only numerical columns from the dataframe
+numerical_cols = gun[sapply(gun, is.numeric)]
+
+# Calculate skewness for each numerical column
+skewness_values = sapply(numerical_cols, skewness)
+
+# Display the skewness values
+print(skewness_values)
+```
+
+
+
+```{r}
+# Apply log transformation (adding 1 to avoid issues with log(0))
+gun$n_guns_involved_log = log(gun$n_guns_involved + 1)
+
+# Visualize the transformed data
+hist(gun$n_guns_involved_log, main = "Log Transformed 'number of guns involved'", xlab = "Log(n_guns_involved)")
+
+gun = gun[, !colnames(gun) %in% c("n_guns_involved")]
+```
+
+
+
+```{r}
+# Select only numerical columns from the dataframe
+numerical_df = gun[sapply(gun, is.numeric)]
+
+# Calculate the correlation matrix
+cor_matrix = cor(numerical_df)
+
+# Find indices of highly correlated pairs
+high_cor_indices = which(abs(cor_matrix) > 0.80 & upper.tri(cor_matrix), arr.ind = TRUE)
+
+# Get unique variable names involved in high correlation
+high_cor_var_names = unique(c(colnames(numerical_df)[high_cor_indices[, 1]], 
+                               colnames(numerical_df)[high_cor_indices[, 2]]))
+
+# Display the variable names
+print(high_cor_var_names)
+```
+
+
+
+```{r}
+# Assuming numerical_df is your dataframe with numerical columns
+pca_result = prcomp(numerical_df, scale. = TRUE)
+
+# Visualization of PCA results (First two principal components)
+# Using colour outside aes() for a consistent color, and frame = TRUE is not required here
+autoplot(pca_result, colour = 'green',loadings=TRUE, loadings.label = TRUE)
+```
+
+
+
+```{r}
+# Running ranger. You can specify the number of trees, mtry, and other parameters.
+ranger_model <- ranger(
+    formula         = violence_score ~ ., 
+    data            = gun, 
+    num.trees       = 500, 
+    mtry            = 3, 
+    importance      = 'impurity', # This will calculate variable importance
+    save.memory     = TRUE, # Use if you have memory limitations
+    probability     = FALSE # Set to TRUE for classification problems
+)
+
+# View the model output
+print(ranger_model)
+```
+
+
+
+```{r}
+# Check if variable importance was calculated
+if (!is.null(ranger_model$variable.importance)) {
+  # Print the variable importance
+  importance <- ranger_model$variable.importance
+  print(importance)
+
+  # Optionally, for a more visual representation, you can create a bar plot
+  importance_df <- data.frame(Variable = names(importance), Importance = importance)
+  importance_df <- importance_df[order(importance_df$Importance, decreasing = TRUE), ]
+  
+  # Using base R plot
+  barplot(importance_df$Importance, names.arg = importance_df$Variable, las = 2, main = "Variable Importance")
+  
+  #Using ggplot
+  library(ggplot2)
+  ggplot(importance_df, aes(x = reorder(Variable, Importance), y = Importance)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  theme_minimal() +
+  labs(title = "Variable Importance", x = "Variables", y = "Importance")
+} else {
+  print("Variable importance was not calculated in this model.")
+}
+```
+
+
+
+```{r}
+gun_2 = gun
+gun_2 = gun_2[, !colnames(gun_2) %in% c("_9mm","Shotgun","_22_LR","Gun_Type_Unknown","Handgun")]
+
+# Running ranger. You can specify the number of trees, mtry, and other parameters.
+ranger_model <- ranger(
+    formula         = violence_score ~ ., 
+    data            = gun_2, 
+    num.trees       = 500, 
+    mtry            = 3, 
+    importance      = 'impurity', # This will calculate variable importance
+    save.memory     = TRUE, # Use if you have memory limitations
+    probability     = FALSE, # Set to TRUE for classification problems
+    seed = 123,
+    write.forest = TRUE,
+    keep.inbag = TRUE
+)
+
+# View the model output
+print(ranger_model)
+```
+
+
+
+```{r}
+# Define the range of trees
+num_trees_seq <- seq(50, 500, by = 50)
+
+# Preallocate a vector to store OOB errors
+oob_errors <- numeric(length(num_trees_seq))
+
+# Loop over the number of trees and train a model each time
+for (i in seq_along(num_trees_seq)) {
+  model <- ranger(
+    formula = violence_score ~ .,
+    data = gun_2,
+    num.trees = num_trees_seq[i],
+    importance = 'impurity',
+    write.forest = TRUE,
+    keep.inbag = TRUE,
+    seed = 123
+  )
+  
+  # Store the OOB error
+  oob_errors[i] <- model$prediction.error
+}
+
+# Combine the number of trees and their corresponding OOB errors
+oob_results <- data.frame(Num_Trees = num_trees_seq, OOB_Error = oob_errors)
+
+# Print the results
+print(oob_results)
+
+```
+
+
+
+```{r}
+plot_data <- data.frame(
+  Num_Trees = num_trees_seq,
+  OOB_Error = oob_errors
+)
+
+# Plot using ggplot2
+ggplot(plot_data, aes(x = num_trees_seq, y = oob_errors)) +
+  geom_line() +
+  geom_point() +
+  theme_minimal() +
+  labs(title = "OOB Error vs. Number of Trees",
+       x = "Number of Trees",
+       y = "OOB Error")
+```
+
+
+
+```{r}
+gun_3 = gun_2
+gun_3 = gun_3[, !colnames(gun_3) %in% c("city_or_county")]
+
+```
+
+
+
+```{r}
+# Running ranger. You can specify the number of trees, mtry, and other parameters.
+ranger_model = ranger(
+    formula         = violence_score ~ ., 
+    data            = gun_3, 
+    num.trees       = 500, 
+    mtry            = 3, 
+    importance      = 'impurity', # This will calculate variable importance
+    save.memory     = TRUE, # Use if you have memory limitations
+    probability     = FALSE # Set to TRUE for classification problems
+)
+print(ranger_model)
+```
+
+
+
+```{r}
+set.seed(123)  # For reproducibility
+split = createDataPartition(gun_3$violence_score, p = 0.8, list = FALSE)
+train_data = gun_3[split, ]
+test_data = gun_3[-split, ]
+
+set.seed(123)  # For reproducibility
+gbm_model = gbm(
+  violence_score ~ .,
+  data = train_data,
+  distribution = "gaussian",  # Use the appropriate distribution for your problem
+  n.trees = 500,
+  interaction.depth = 3,
+  shrinkage = 0.01,
+  cv.folds = 5
+)
+
+# Predictions
+predictions = predict(gbm_model, newdata = test_data, n.trees = gbm_model$n.trees)
+
+# Evaluate with RMSE
+mse = mean((test_data$violence_score - predictions)^2)
+print(paste("MSE:", mse))
+
+```
+
+
+
+```{r}
+gbm_model
+```
+
+
+
+```{r}
+# Determine the optimal number of clusters
+wss <- numeric()
+for (k in 2:10) {
+  set.seed(123) # for reproducibility
+  model <- kproto(gun_3, k)
+  wss[k] <- model$tot.withinss
+}
+
+# Plot the WSS to find the elbow
+plot(2:10, wss[2:10], type="b", xlab="Number of clusters", ylab="Total within sum of squares")
+
+# Choosing the number of clusters where the plot shows an 'elbow'
+```
+
+
+
+```{r}
+# gun_3 is our data frame with both numerical and categorical data
+# You'll need to make sure that categorical columns are factors
+
+# Running k-prototypes clustering
+set.seed(123) # For reproducibility
+kproto_result <- kproto(x = gun_3, k = 9) # Replace 'k' with the desired number of clusters
+
+options(max.print = 10000)
+
+# Inspecting the clustering result
+print(kproto_result)
+```
+
+
+
+```{r}
+summary(kproto_result)
+```
+
+
+
+```{r}
+# Get the cluster centroids for numerical attributes
+centroids_numerical = kproto_result$centers
+
+# Initialize an empty list to store categorical centroids
+centroids_categorical = list()
+
+# Loop through each column in the dataframe
+for (i in seq_along(gun_3)) {
+  # Check if the column is a factor
+  if (is.factor(gun_3[[i]])) {
+    # Compute the mode for the categorical column within each cluster
+    centroids_categorical[[names(gun_3)[i]]] <- tapply(gun_3[[i]], kproto_result$cluster, function(x) {
+      lvls = levels(x)
+      lvl_counts = tabulate(match(x, lvls))
+      lvls[which.max(lvl_counts)]
+    })
+  }
+}
+
+# Print the numerical centroids
+print(centroids_numerical)
+
+# Print the categorical centroids
+print(centroids_categorical)
+```
